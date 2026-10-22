@@ -1,0 +1,12 @@
+#!/bin/sh
+# Kept so Dockerfiles written for the official image build unchanged. The
+# packaged extensions are already compiled with their usual options (gd has
+# freetype, jpeg and webp), so configure flags have nothing to apply to.
+set -e
+
+if [ "$#" -eq 0 ]; then
+	echo >&2 "usage: $0 ext-name [configure flags]"
+	exit 1
+fi
+
+echo >&2 "docker-php-ext-configure: ignoring flags for '$1'; php$PHP_VERSION-$1 is prebuilt"

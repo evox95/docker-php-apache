@@ -1,0 +1,105 @@
+#!/bin/sh
+# Same interface as the official docker-php-ext-install, but extensions come
+# prebuilt from the deb.sury.org php$PHP_VERSION-* packages instead of being
+# compiled from the PHP source tree.
+set -e
+
+usage() {
+	echo "usage: $0 [-jN] [--ini-name file.ini] ext-name [ext-name ...]"
+	echo "   ie: $0 gd mysqli"
+	echo "       $0 pdo pdo_mysql"
+	echo
+	echo "Extensions are installed from the php$PHP_VERSION-<name> packages."
+}
+
+opts="$(getopt -o 'h?j:' --long 'help,ini-name:,jobs:' -- "$@" || { usage >&2 && false; })"
+eval set -- "$opts"
+
+iniName=
+while true; do
+	flag="$1"
+	shift
+	case "$flag" in
+		--help|-h|'-?') usage && exit 0 ;;
+		--ini-name) iniName="$1" && shift ;;
+		# accepted for compatibility; nothing is compiled
+		--jobs|-j) shift ;;
+		--) break ;;
+		*)
+			{
+				echo "error: unknown flag: $flag"
+				usage
+			} >&2
+			exit 1
+			;;
+	esac
+done
+
+if [ "$#" -eq 0 ]; then
+	usage >&2
+	exit 1
+fi
+
+# extension name -> Sury package suffix
+package_for() {
+	case "$1" in
+		mysqli|mysqlnd|pdo_mysql) echo mysql ;;
+		pdo_sqlite) echo sqlite3 ;;
+		pdo_pgsql) echo pgsql ;;
+		pdo_odbc) echo odbc ;;
+		pdo_dblib) echo sybase ;;
+		pdo_firebird) echo interbase ;;
+		dom|simplexml|xmlreader|xmlwriter|xsl|wddx) echo xml ;;
+		*) echo "$1" ;;
+	esac
+}
+
+extDir="$(php -d 'display_errors=stderr' -r 'echo ini_get("extension_dir");')"
+
+loaded() {
+	php -d 'display_errors=stderr' -r 'exit(extension_loaded("'"$1"'") || ("'"$1"'" === "opcache" && extension_loaded("Zend OPcache")) ? 0 : 1);'
+}
+
+pkgs=
+enable=
+for ext; do
+	case "$ext" in
+		*/*|.*)
+			echo >&2 "error: building '$ext' from source is not supported; use pecl or a php$PHP_VERSION-* package"
+			exit 1
+			;;
+	esac
+	# compiled in or part of the baseline (e.g. sodium, pcntl for CLI, curl)
+	if loaded "$ext"; then
+		echo >&2 "warning: $ext is already loaded"
+		continue
+	fi
+	enable="$enable $ext"
+	# shipped as a shared module already (e.g. php-common's calendar, exif)
+	[ -f "$extDir/$ext.so" ] || pkgs="$pkgs php$PHP_VERSION-$(package_for "$ext")"
+done
+
+if [ -n "$pkgs" ]; then
+	before="$(php -m | tr 'A-Z' 'a-z' | xargs)"
+	apt-get update
+	apt-get install -y --no-install-recommends $pkgs
+	rm -rf /var/lib/apt/lists/*
+	# A package may ship more modules than requested (php-mysql has mysqli and
+	# pdo_mysql); only the requested ones are enabled, as in the official image.
+	# Modules of packages pulled in as dependencies (igbinary for redis) stay.
+	for mod in $(dpkg -L $pkgs | sed -n 's|^/usr/share/php[^/]*/[^/]*/\([^/]*\)\.ini$|\1|p'); do
+		case " $enable $before " in
+			*" $mod "*) ;;
+			*) phpdismod -v "$PHP_VERSION" -s ALL "$mod" ;;
+		esac
+	done
+fi
+
+for ext in $enable; do
+	# Package postinst enables the module in the per-SAPI conf.d; move it to
+	# $PHP_INI_DIR/conf.d like the official image, so --ini-name and load
+	# order behave the same.
+	phpdismod -v "$PHP_VERSION" -s ALL "$ext"
+	docker-php-ext-enable ${iniName:+--ini-name "$iniName"} "$ext"
+	loaded "$ext" || { echo >&2 "error: $ext does not load after install"; exit 1; }
+done
