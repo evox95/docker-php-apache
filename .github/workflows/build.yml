@@ -74,10 +74,16 @@ jobs:
         if: env.PUBLISH == 'true'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
+          METADATA: ${{ steps.build.outputs.metadata }}
           TAG: test/php:${{ matrix.php }}-apache
         run: |
-          # the pushed manifest must be the image that was just tested
-          test "$DIGEST" = "$(docker image inspect --format '{{.Id}}' "$TAG")"
+          # The pushed manifest must be the image that was just tested. The
+          # local image ID is the config digest with the classic image store
+          # and the manifest digest with the containerd one.
+          config="$(jq -r '."containerimage.config.digest"' <<< "$METADATA")"
+          id="$(docker image inspect --format '{{.Id}}' "$TAG")"
+          [ "$id" = "$config" ] || [ "$id" = "$DIGEST" ] \
+            || { echo "::error::tested image $id is not the pushed one (manifest $DIGEST, config $config)"; exit 1; }
           mkdir -p "$RUNNER_TEMP/digests"
           touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
       - name: Upload digest
